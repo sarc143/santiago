@@ -11,13 +11,13 @@ nothing santiago does is permanent. it never deletes your files. worst case, an 
 open terminal (press cmd+space, type "terminal", hit enter) and paste this:
 
 ```
-curl -sL https://raw.githubusercontent.com/markmoscovici/santiago/master/santiago -o /usr/local/bin/santiago && chmod +x /usr/local/bin/santiago
+curl -sL https://raw.githubusercontent.com/sarc143/santiago/master/santiago -o /usr/local/bin/santiago && chmod +x /usr/local/bin/santiago
 ```
 
 if that gives a permission error, try:
 
 ```
-sudo curl -sL https://raw.githubusercontent.com/markmoscovici/santiago/master/santiago -o /usr/local/bin/santiago && sudo chmod +x /usr/local/bin/santiago
+sudo curl -sL https://raw.githubusercontent.com/sarc143/santiago/master/santiago -o /usr/local/bin/santiago && sudo chmod +x /usr/local/bin/santiago
 ```
 
 it'll ask for your password. that's your mac login password (it won't show as you type, that's normal).
