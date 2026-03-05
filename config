@@ -1,12 +1,12 @@
 # santiago config — edit thresholds and behavior here
 
 # Memory pressure thresholds (% free below which action is taken)
-PURGE_THRESHOLD=30
-CRITICAL_THRESHOLD=15
-BATTERY_PURGE_THRESHOLD=40
+PURGE_THRESHOLD=40
+CRITICAL_THRESHOLD=20
+BATTERY_PURGE_THRESHOLD=50
 
-# Daemon interval in seconds (default 900 = 15 min)
-INTERVAL=900
+# Daemon interval in seconds (default 300 = 5 min)
+INTERVAL=300
 
 # Aggressive mode: pause CPU hogs with SIGSTOP (default false)
 AGGRESSIVE=false

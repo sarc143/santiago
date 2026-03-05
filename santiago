@@ -11,10 +11,10 @@ PLIST_PATH="$HOME/Library/LaunchAgents/com.santiago.daemon.plist"
 SCRIPT_PATH="$SANTIAGO_DIR/santiago"
 
 # Defaults
-PURGE_THRESHOLD=30
-CRITICAL_THRESHOLD=15
-BATTERY_PURGE_THRESHOLD=40
-INTERVAL=900
+PURGE_THRESHOLD=40
+CRITICAL_THRESHOLD=20
+BATTERY_PURGE_THRESHOLD=50
+INTERVAL=300
 AGGRESSIVE=false
 CPU_HOG_THRESHOLD=80
 
@@ -367,12 +367,13 @@ cmd_nuke() {
     local protected="Finder|WindowServer|SystemUIServer|Dock|loginwindow|santiago|bash|zsh|ssh|tmux|screen"
 
     local user_procs
-    user_procs=$(ps -axo pid,user,command 2>/dev/null | \
+    user_procs=$(ps -axo pid,user,%mem,command 2>/dev/null | \
         awk -v user="$(whoami)" -v prot="$protected" \
         'BEGIN { split(prot, arr, "|"); for (i in arr) protmap[arr[i]]=1 }
          NR>1 && $2==user {
+            mem=$3
             fullcmd=""
-            for (i=3; i<=NF; i++) fullcmd = fullcmd (i>3?" ":"") $i
+            for (i=4; i<=NF; i++) fullcmd = fullcmd (i>4?" ":"") $i
             n=split(fullcmd, parts, "/")
             name=parts[n]
             if (fullcmd ~ /\.app\//) {
@@ -383,20 +384,21 @@ cmd_nuke() {
             }
             skip=0
             for (p in protmap) { if (name ~ p || fullcmd ~ p) { skip=1; break } }
-            if (!skip && fullcmd !~ /^\/usr\/|^\/System\/|^\/sbin\/|com\.apple\./) print $1, name
+            if (!skip && fullcmd !~ /^\/usr\/|^\/System\/|^\/sbin\/|com\.apple\./) print $1, name, mem
         }')
 
     if [[ -n "$user_procs" ]]; then
-        # Group by app name into parallel arrays (bash 3 compatible)
+        # Group by app name, sum memory, sort biggest hogs first
         local app_groups
         app_groups=$(echo "$user_procs" | awk '{
-            name=$2; pid=$1
+            name=$2; pid=$1; mem=$3+0
             if (!(name in pids)) { order[++n]=name }
             pids[name] = pids[name] " " pid
             cnt[name]++
+            totmem[name] += mem
         } END {
-            for (i=1; i<=n; i++) print order[i] "\t" cnt[order[i]] "\t" pids[order[i]]
-        }')
+            for (i=1; i<=n; i++) print totmem[order[i]] "\t" order[i] "\t" cnt[order[i]] "\t" pids[order[i]]
+        }' | sort -rn | cut -f2-)
 
         local total
         total=$(echo "$user_procs" | wc -l | tr -d ' ')
@@ -622,7 +624,7 @@ cmd_help() {
     echo "    status       How's my Mac doing right now?"
     echo "    burn         Free up memory (quick clean, nothing gets closed)"
     echo "    nuke         Pick which apps to force-quit, one by one"
-    echo "    start        Run santiago in the background every 15 min"
+    echo "    start        Run santiago in the background every 5 min"
     echo "    stop         Turn off the background thing"
     echo "    log          See what santiago has been doing"
     echo "    uninstall    Get rid of santiago completely"
