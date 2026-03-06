@@ -640,6 +640,348 @@ cmd_nuke() {
     fi
 }
 
+cmd_whitelist() {
+    print_fire
+    echo "  Apps on this list are safe from santiago. It will never close or pause them."
+    echo ""
+
+    # Built-in protected apps (always safe, can't be removed)
+    local builtin_protected="Screenshot|ScreenCaptureKit|screencaptureui|screencapture|CleanShot|Shottr|Lightshot|Skitch|Monosnap|Snagit|Xnapper|ShareShot|Bartender|Ice|iStatMenus|MenubarX|Hidden Bar|Dozer|Vanilla"
+
+    # Parse current user whitelist into an array
+    local user_wl_items=()
+    if [[ -n "$WHITELIST" ]]; then
+        IFS='|' read -ra user_wl_items <<< "$WHITELIST"
+    fi
+
+    # --- Show current whitelist ---
+    echo "  ── Currently protected (built-in) ──"
+    echo ""
+    # Check which built-in ones are actually installed
+    local builtin_found=0
+    IFS='|' read -ra builtin_arr <<< "$builtin_protected"
+    for app in "${builtin_arr[@]}"; do
+        # Check if running or installed in /Applications
+        local found=false
+        if pgrep -iq "$app" 2>/dev/null; then
+            found=true
+        elif ls /Applications/ 2>/dev/null | grep -qi "$app"; then
+            found=true
+        elif ls /Applications/Utilities/ 2>/dev/null | grep -qi "$app"; then
+            found=true
+        fi
+        if $found; then
+            echo "    ✓ $app (built-in, always protected)"
+            builtin_found=$((builtin_found + 1))
+        fi
+    done
+    if (( builtin_found == 0 )); then
+        echo "    (none of the default screenshot/menubar tools are installed)"
+    fi
+    echo ""
+
+    if (( ${#user_wl_items[@]} > 0 )); then
+        echo "  ── Your whitelist ──"
+        echo ""
+        for app in "${user_wl_items[@]}"; do
+            [[ -z "$app" ]] && continue
+            echo "    ✓ $app"
+        done
+        echo ""
+    fi
+
+    # If just viewing (no subcommand), show the list and hint at add
+    local subcmd="${1:-}"
+    if [[ "$subcmd" != "add" && "$subcmd" != "remove" ]]; then
+        echo "  ── Apps on your Mac you could protect ──"
+        echo ""
+
+        # Discover user apps: running user processes + /Applications
+        # Exclude system stuff, already-protected stuff, and shells
+        local all_protected="Finder|WindowServer|SystemUIServer|Dock|loginwindow|santiago|bash|zsh|ssh|tmux|screen|${builtin_protected}"
+        if [[ -n "$WHITELIST" ]]; then
+            all_protected="${all_protected}|${WHITELIST}"
+        fi
+
+        # Get running user apps (similar logic to nuke's process discovery)
+        local running_apps
+        running_apps=$(ps -axo pid,user,command 2>/dev/null | \
+            awk -v user="$(whoami)" -v prot="$all_protected" \
+            'BEGIN { split(prot, arr, "|"); for (i in arr) protmap[arr[i]]=1 }
+             NR>1 && $2==user {
+                fullcmd=""
+                for (i=3; i<=NF; i++) fullcmd = fullcmd (i>3?" ":"") $i
+                name=""
+                if (fullcmd ~ /\.app\//) {
+                    tmp = fullcmd
+                    sub(/\.app\/.*/, "", tmp)
+                    n2 = split(tmp, pp, "/")
+                    if (n2 > 0 && pp[n2] != "") name = pp[n2]
+                }
+                if (name == "") {
+                    n = split(fullcmd, parts, "/")
+                    name = parts[n]
+                    sub(/ .*/, "", name)
+                }
+                if (name == "" || length(name) < 2) next
+                skip=0
+                for (p in protmap) { if (name == p || tolower(name) == tolower(p)) { skip=1; break } }
+                if (!skip && fullcmd !~ /^\/usr\/|^\/System\/|^\/sbin\/|com\.apple\./) print name
+            }' | sort -u)
+
+        # Also scan /Applications for .app bundles not currently running
+        local installed_apps
+        installed_apps=$(ls -1 /Applications/ 2>/dev/null | grep '\.app$' | sed 's/\.app$//' | while read -r appname; do
+            # Skip if already protected
+            if echo "$appname" | grep -qiE "$all_protected"; then
+                continue
+            fi
+            echo "$appname"
+        done)
+
+        # Merge and deduplicate
+        local all_addable
+        all_addable=$(printf "%s\n%s" "$running_apps" "$installed_apps" | grep -v '^$' | sort -uf)
+
+        if [[ -z "$all_addable" ]]; then
+            echo "    (no additional apps found to whitelist)"
+            echo ""
+            return 0
+        fi
+
+        # Load into arrays for the TUI
+        local app_names=()
+        local app_statuses=()
+        while IFS= read -r aname; do
+            [[ -z "$aname" ]] && continue
+            app_names+=("$aname")
+            app_statuses+=(" ")
+        done <<< "$all_addable"
+
+        local app_count=${#app_names[@]}
+
+        if (( app_count == 0 )); then
+            echo "    (no additional apps found to whitelist)"
+            echo ""
+            return 0
+        fi
+
+        echo "  Found ${app_count} apps. Pick which ones to protect."
+        echo ""
+        echo "  ↑↓ navigate  ⏎ toggle protection  s save & exit  q quit without saving"
+        echo ""
+
+        # --- Interactive TUI selector ---
+        local cursor=0
+
+        local saved_tty
+        saved_tty=$(stty -g </dev/tty 2>/dev/null)
+
+        cleanup_wl_tui() {
+            tput cnorm 2>/dev/null
+            stty "$saved_tty" </dev/tty 2>/dev/null
+            echo ""
+        }
+        trap cleanup_wl_tui EXIT
+        trap 'cleanup_wl_tui; exit 130' INT TERM
+
+        tput civis 2>/dev/null
+
+        # Initial draw
+        local idx=0
+        while (( idx < app_count )); do
+            if (( idx == 0 )); then
+                printf "  \033[1m>   %s\033[0m\n" "${app_names[$idx]}"
+            else
+                printf "      %s\n" "${app_names[$idx]}"
+            fi
+            idx=$((idx + 1))
+        done
+
+        draw_wl_row() {
+            local idx=$1
+            local up=$(( app_count - idx ))
+            printf "\033[s"
+            printf "\033[%dA\r" "$up"
+            tput el 2>/dev/null
+            local marker="  "
+            if [[ "${app_statuses[$idx]}" == "ADDED" ]]; then
+                marker="✓ "
+            fi
+            if (( idx == cursor )); then
+                if [[ "${app_statuses[$idx]}" == "ADDED" ]]; then
+                    printf "  \033[32;1m> %s%s\033[0m" "$marker" "${app_names[$idx]}"
+                else
+                    printf "  \033[1m> %s%s\033[0m" "$marker" "${app_names[$idx]}"
+                fi
+            else
+                if [[ "${app_statuses[$idx]}" == "ADDED" ]]; then
+                    printf "    \033[32m%s%s\033[0m" "$marker" "${app_names[$idx]}"
+                else
+                    printf "    %s%s" "$marker" "${app_names[$idx]}"
+                fi
+            fi
+            printf "\033[u"
+        }
+
+        while true; do
+            local key
+            IFS= read -rsn1 key </dev/tty
+
+            if [[ "$key" == $'\x1b' ]]; then
+                local seq
+                IFS= read -rsn2 seq </dev/tty
+                case "$seq" in
+                    '[A')
+                        if (( cursor > 0 )); then
+                            local old=$cursor
+                            cursor=$((cursor - 1))
+                            draw_wl_row "$old"
+                            draw_wl_row "$cursor"
+                        fi
+                        ;;
+                    '[B')
+                        if (( cursor < app_count - 1 )); then
+                            local old=$cursor
+                            cursor=$((cursor + 1))
+                            draw_wl_row "$old"
+                            draw_wl_row "$cursor"
+                        fi
+                        ;;
+                esac
+            elif [[ "$key" == "" ]]; then
+                # Toggle
+                if [[ "${app_statuses[$cursor]}" == "ADDED" ]]; then
+                    app_statuses[$cursor]=" "
+                else
+                    app_statuses[$cursor]="ADDED"
+                fi
+                draw_wl_row "$cursor"
+            elif [[ "$key" == "s" || "$key" == "S" ]]; then
+                # Save — build new whitelist from existing + newly toggled
+                local new_items=()
+                # Keep existing user whitelist items
+                for item in "${user_wl_items[@]}"; do
+                    [[ -n "$item" ]] && new_items+=("$item")
+                done
+                # Add newly selected
+                for (( idx=0; idx<app_count; idx++ )); do
+                    if [[ "${app_statuses[$idx]}" == "ADDED" ]]; then
+                        new_items+=("${app_names[$idx]}")
+                    fi
+                done
+
+                # Build pipe-separated string
+                local new_whitelist=""
+                for item in "${new_items[@]}"; do
+                    if [[ -z "$new_whitelist" ]]; then
+                        new_whitelist="$item"
+                    else
+                        new_whitelist="${new_whitelist}|${item}"
+                    fi
+                done
+
+                # Write to config
+                if [[ -f "$CONFIG_FILE" ]]; then
+                    if grep -q '^WHITELIST=' "$CONFIG_FILE"; then
+                        sed -i '' "s|^WHITELIST=.*|WHITELIST=\"${new_whitelist}\"|" "$CONFIG_FILE" 2>/dev/null || \
+                            sed -i "s|^WHITELIST=.*|WHITELIST=\"${new_whitelist}\"|" "$CONFIG_FILE" 2>/dev/null
+                    else
+                        echo "WHITELIST=\"${new_whitelist}\"" >> "$CONFIG_FILE"
+                    fi
+                else
+                    echo "WHITELIST=\"${new_whitelist}\"" > "$CONFIG_FILE"
+                fi
+
+                cleanup_wl_tui
+                trap - EXIT INT TERM
+
+                local added_count=0
+                for (( idx=0; idx<app_count; idx++ )); do
+                    [[ "${app_statuses[$idx]}" == "ADDED" ]] && added_count=$((added_count + 1))
+                done
+
+                echo ""
+                if (( added_count > 0 )); then
+                    echo "  ✓ Saved! ${added_count} app(s) added to your whitelist."
+                else
+                    echo "  ✓ Whitelist saved (no new apps added)."
+                fi
+                if [[ -n "$new_whitelist" ]]; then
+                    echo "  Protected: ${new_whitelist//|/, }"
+                fi
+                echo ""
+                log "Whitelist updated: ${new_whitelist}"
+                return 0
+            elif [[ "$key" == "q" || "$key" == "Q" ]]; then
+                break
+            fi
+        done
+
+        cleanup_wl_tui
+        trap - EXIT INT TERM
+        echo "  (no changes saved)"
+        echo ""
+        return 0
+    fi
+
+    # --- santiago whitelist remove ---
+    if [[ "$subcmd" == "remove" ]]; then
+        if (( ${#user_wl_items[@]} == 0 )); then
+            echo "  Your whitelist is empty — nothing to remove."
+            echo ""
+            return 0
+        fi
+
+        local remove_target="${2:-}"
+        if [[ -z "$remove_target" ]]; then
+            echo "  Usage: santiago whitelist remove <AppName>"
+            echo ""
+            echo "  Your current whitelist:"
+            for app in "${user_wl_items[@]}"; do
+                [[ -n "$app" ]] && echo "    - $app"
+            done
+            echo ""
+            return 0
+        fi
+
+        # Rebuild without the target
+        local new_items=()
+        local removed=false
+        for item in "${user_wl_items[@]}"; do
+            if [[ "${item,,}" == "${remove_target,,}" ]]; then
+                removed=true
+            else
+                [[ -n "$item" ]] && new_items+=("$item")
+            fi
+        done
+
+        if ! $removed; then
+            echo "  '$remove_target' is not in your whitelist."
+            echo ""
+            return 1
+        fi
+
+        local new_whitelist=""
+        for item in "${new_items[@]}"; do
+            if [[ -z "$new_whitelist" ]]; then
+                new_whitelist="$item"
+            else
+                new_whitelist="${new_whitelist}|${item}"
+            fi
+        done
+
+        if grep -q '^WHITELIST=' "$CONFIG_FILE" 2>/dev/null; then
+            sed -i '' "s|^WHITELIST=.*|WHITELIST=\"${new_whitelist}\"|" "$CONFIG_FILE" 2>/dev/null || \
+                sed -i "s|^WHITELIST=.*|WHITELIST=\"${new_whitelist}\"|" "$CONFIG_FILE" 2>/dev/null
+        fi
+
+        echo "  ✓ Removed '$remove_target' from your whitelist."
+        echo ""
+        log "Whitelist: removed $remove_target"
+    fi
+}
+
 cmd_help() {
     print_fire
     echo "  Your Mac only has 8GB of RAM. Santiago keeps it from choking."
@@ -649,6 +991,7 @@ cmd_help() {
     echo "    status       How's my Mac doing right now?"
     echo "    burn         Free up memory (quick clean, nothing gets closed)"
     echo "    nuke         Pick which apps to force-quit, one by one"
+    echo "    whitelist    See and pick which apps santiago should never touch"
     echo "    start        Run santiago in the background every 5 min"
     echo "    stop         Turn off the background thing"
     echo "    log          See what santiago has been doing"
@@ -662,9 +1005,9 @@ cmd_help() {
     echo "    santiago start          # set it and forget it"
     echo ""
     echo "  Whitelist:"
-    echo "    Screenshot tools and menubar utilities are protected by default."
-    echo "    To protect additional apps, edit ~/.santiago/config and set:"
-    echo "      WHITELIST=\"MyApp|AnotherApp\""
+    echo "    santiago whitelist         # see protected apps + pick new ones"
+    echo "    santiago whitelist remove AppName  # unprotect an app"
+    echo "    Screenshot tools and menubar utilities are always protected."
     echo ""
     echo "  Nothing santiago does is permanent. It never deletes files."
     echo "  Worst case: an app you closed reopens itself. That's it."
@@ -679,6 +1022,7 @@ case "${1:-}" in
     status)   cmd_status ;;
     burn)     shift; cmd_burn "$@" ;;
     nuke)     shift; cmd_nuke "$@" ;;
+    whitelist) shift; cmd_whitelist "$@" ;;
     start)    cmd_start ;;
     stop)     cmd_stop ;;
     log)      cmd_log ;;
