@@ -33,6 +33,7 @@ done. type `santiago` to see if it worked.
 - `santiago start` — run santiago in the background every 15 minutes
 - `santiago stop` — turn off the background thing
 - `santiago log` — see what santiago has been doing
+- `santiago update` — grab the latest version from github
 - `santiago uninstall` — completely remove santiago
 
 ## the commands
@@ -62,6 +63,14 @@ to remove an app later: `santiago whitelist remove AppName`
 ### start / stop
 
 `santiago start` makes santiago run `burn` automatically every 15 minutes in the background. you won't notice it's there. `santiago stop` turns it off.
+
+### update
+
+```
+santiago update
+```
+
+checks github for a newer version and installs it. if santiago is in `/usr/local/bin` it'll ask for your password. if the background daemon is running, it restarts it automatically so it picks up the new version.
 
 ## uninstall
 

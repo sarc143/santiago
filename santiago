@@ -9,6 +9,7 @@ LOG_FILE="$SANTIAGO_DIR/santiago.log"
 CONFIG_FILE="$SANTIAGO_DIR/config"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.santiago.daemon.plist"
 SCRIPT_PATH="$SANTIAGO_DIR/santiago"
+REMOTE_URL="https://raw.githubusercontent.com/sarc143/santiago/master/santiago"
 
 # Defaults
 PURGE_THRESHOLD=40
@@ -982,6 +983,75 @@ cmd_whitelist() {
     fi
 }
 
+cmd_update() {
+    print_fire
+    echo "  Checking for updates..."
+    echo ""
+
+    # Figure out where we're installed
+    local self
+    self="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+
+    # Download latest to a temp file
+    local tmpfile
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/santiago-update.XXXXXX")
+    trap "rm -f '$tmpfile'" RETURN
+
+    if ! curl -fsSL "$REMOTE_URL" -o "$tmpfile" 2>/dev/null; then
+        echo "  ✗ Couldn't reach GitHub. Check your internet and try again."
+        echo ""
+        return 1
+    fi
+
+    # Verify it's actually a script (basic sanity check)
+    if ! head -1 "$tmpfile" | grep -q '^#!/bin/bash'; then
+        echo "  ✗ Downloaded file doesn't look right. Update aborted."
+        echo ""
+        return 1
+    fi
+
+    # Compare with current version
+    if diff -q "$self" "$tmpfile" >/dev/null 2>&1; then
+        echo "  ✓ Already up to date. You're running the latest version."
+        echo ""
+        return 0
+    fi
+
+    # Show what changed (brief summary)
+    local added removed
+    added=$(diff "$self" "$tmpfile" 2>/dev/null | grep -c '^>' || true)
+    removed=$(diff "$self" "$tmpfile" 2>/dev/null | grep -c '^<' || true)
+    echo "  New version available (+${added} -${removed} lines)"
+    echo ""
+
+    # Install — may need sudo depending on where we're installed
+    if [[ -w "$self" ]]; then
+        cp "$tmpfile" "$self"
+        chmod +x "$self"
+        echo "  ✓ Updated! santiago is now the latest version."
+    elif sudo cp "$tmpfile" "$self" 2>/dev/null && sudo chmod +x "$self" 2>/dev/null; then
+        echo "  ✓ Updated! (used sudo since ${self} isn't writable by you)"
+    else
+        echo "  ✗ Couldn't write to ${self}. Try:"
+        echo "    sudo santiago update"
+        echo ""
+        return 1
+    fi
+
+    echo ""
+
+    # Restart daemon if it's running so it picks up the new version
+    if daemon_running; then
+        echo "  Restarting background daemon with new version..."
+        cmd_stop >/dev/null 2>&1
+        cmd_start >/dev/null 2>&1
+        echo "  ✓ Daemon restarted."
+        echo ""
+    fi
+
+    log "Updated santiago from GitHub"
+}
+
 cmd_help() {
     print_fire
     echo "  Your Mac only has 8GB of RAM. Santiago keeps it from choking."
@@ -995,6 +1065,7 @@ cmd_help() {
     echo "    start        Run santiago in the background every 5 min"
     echo "    stop         Turn off the background thing"
     echo "    log          See what santiago has been doing"
+    echo "    update       Grab the latest version from GitHub"
     echo "    uninstall    Get rid of santiago completely"
     echo ""
     echo "  Examples:"
@@ -1026,6 +1097,7 @@ case "${1:-}" in
     start)    cmd_start ;;
     stop)     cmd_stop ;;
     log)      cmd_log ;;
+    update)    cmd_update ;;
     uninstall) cmd_uninstall ;;
     help|--help|-h) cmd_help ;;
     *)        cmd_help ;;
