@@ -77,6 +77,17 @@ daemon_running() {
     launchctl list 2>/dev/null | grep -q "com.santiago.daemon"
 }
 
+# Run a command with sudo if a TTY is available for password prompts.
+# When running as a daemon (no TTY), attempt the command without sudo first,
+# then try sudo non-interactively (-n). Returns 1 if neither works.
+try_sudo() {
+    if [[ -t 0 ]]; then
+        sudo "$@"
+    else
+        "$@" 2>/dev/null || sudo -n "$@" 2>/dev/null
+    fi
+}
+
 # --- Commands ---
 
 cmd_status() {
@@ -167,7 +178,7 @@ cmd_burn() {
                 echo "  [would] Run 'sudo purge' to free inactive memory"
             else
                 echo "  [action] Purging inactive memory..."
-                sudo purge 2>/dev/null && echo "  [done] Memory purged" || echo "  [skip] purge requires sudo — run with sudo or enter password"
+                try_sudo purge && echo "  [done] Memory purged" || echo "  [skip] purge requires sudo — run with sudo or enter password"
                 log "Purged memory (was ${mem_free}% free, threshold ${threshold}%)"
             fi
         else
@@ -199,7 +210,7 @@ cmd_burn() {
             echo "    PID $pid: $cmd (${cpu}% CPU, ${mem}% MEM)"
 
             # Skip whitelisted apps
-            if echo "$cmd" | grep -qiE "$burn_protected"; then
+            if printf '%s\n' "$cmd" | grep -qiE "$burn_protected"; then
                 echo "    [skip] $cmd is whitelisted"
                 continue
             fi
@@ -223,7 +234,7 @@ cmd_burn() {
     # --- Thermal ---
     local therm
     therm=$(get_thermal_pressure)
-    if echo "$therm" | grep -qi "limit\|throttle"; then
+    if printf '%s\n' "$therm" | grep -qi "limit\|throttle"; then
         echo ""
         echo "  [warn] Thermal throttling detected: $therm"
         log "Thermal throttling: $therm"
@@ -331,6 +342,17 @@ cmd_nuke() {
     echo "  RAM now: ${mem_before}% free"
     echo ""
 
+    # Bare minimum protection — only stuff that would break your session
+    # Also protect screenshot tools and menubar utilities by default
+    local protected="Finder|WindowServer|SystemUIServer|Dock|loginwindow|santiago|bash|zsh|ssh|tmux|screen"
+    protected="${protected}|Screenshot|ScreenCaptureKit|screencaptureui|screencapture"
+    protected="${protected}|CleanShot|Shottr|Lightshot|Skitch|Monosnap|Snagit|Xnapper|ShareShot"
+    protected="${protected}|Bartender|Ice|iStatMenus|MenubarX|Hidden Bar|Dozer|Vanilla"
+    # Append user whitelist if set
+    if [[ -n "$WHITELIST" ]]; then
+        protected="${protected}|${WHITELIST}"
+    fi
+
     # ═══ Phase 1: Non-destructive (no confirmation needed) ═══
     echo "  ═══ Phase 1: Memory & system flush ═══"
     echo ""
@@ -340,7 +362,7 @@ cmd_nuke() {
         echo "  [would] Purge all inactive memory"
     else
         echo "  [action] Purging all inactive memory..."
-        sudo purge 2>/dev/null && echo "  [done] Memory purged" || echo "  [skip] purge needs sudo"
+        try_sudo purge && echo "  [done] Memory purged" || echo "  [skip] purge needs sudo"
         log "NUKE: Memory purged"
     fi
 
@@ -349,7 +371,7 @@ cmd_nuke() {
         echo "  [would] Flush DNS cache"
     else
         echo "  [action] Flushing DNS cache..."
-        sudo dscacheutil -flushcache 2>/dev/null && sudo killall -HUP mDNSResponder 2>/dev/null && \
+        try_sudo dscacheutil -flushcache && try_sudo killall -HUP mDNSResponder && \
             echo "  [done] DNS flushed" || echo "  [skip] DNS flush needs sudo"
         log "NUKE: DNS cache flushed"
     fi
@@ -361,7 +383,7 @@ cmd_nuke() {
         echo ""
         echo "  [action] Pausing CPU hogs (>${CPU_HOG_THRESHOLD}%):"
         echo "$cpu_hogs" | while read -r pid user cpu mem cmd; do
-            if echo "$cmd" | grep -qiE "$protected"; then
+            if printf '%s\n' "$cmd" | grep -qiE "$protected"; then
                 echo "    [skip] $cmd (PID $pid) is protected"
                 continue
             fi
@@ -380,17 +402,6 @@ cmd_nuke() {
     # ═══ Phase 2: App killzone (interactive) ═══
     echo "  ═══ Phase 2: App killzone ═══"
     echo ""
-
-    # Bare minimum protection — only stuff that would break your session
-    # Also protect screenshot tools and menubar utilities by default
-    local protected="Finder|WindowServer|SystemUIServer|Dock|loginwindow|santiago|bash|zsh|ssh|tmux|screen"
-    protected="${protected}|Screenshot|ScreenCaptureKit|screencaptureui|screencapture"
-    protected="${protected}|CleanShot|Shottr|Lightshot|Skitch|Monosnap|Snagit|Xnapper|ShareShot"
-    protected="${protected}|Bartender|Ice|iStatMenus|MenubarX|Hidden Bar|Dozer|Vanilla"
-    # Append user whitelist if set
-    if [[ -n "$WHITELIST" ]]; then
-        protected="${protected}|${WHITELIST}"
-    fi
 
     local user_procs
     user_procs=$(ps -axo pid,user,%mem,command 2>/dev/null | \
@@ -734,7 +745,7 @@ cmd_whitelist() {
         local installed_apps
         installed_apps=$(ls -1 /Applications/ 2>/dev/null | grep '\.app$' | sed 's/\.app$//' | while read -r appname; do
             # Skip if already protected
-            if echo "$appname" | grep -qiE "$all_protected"; then
+            if printf '%s\n' "$appname" | grep -qiE "$all_protected"; then
                 continue
             fi
             echo "$appname"
@@ -995,9 +1006,21 @@ cmd_update() {
     # Download latest to a temp file
     local tmpfile
     tmpfile=$(mktemp "${TMPDIR:-/tmp}/santiago-update.XXXXXX")
-    trap "rm -f '$tmpfile'" RETURN
+    trap "rm -f -- \"${tmpfile}\"" RETURN
 
-    if ! curl -fsSL "$REMOTE_URL" -o "$tmpfile" 2>/dev/null; then
+    # Build curl args — add auth if available (needed for private repos, avoids rate limits)
+    local curl_args=(-fsSL -o "$tmpfile")
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
+    elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        local gh_token
+        gh_token=$(gh auth token 2>/dev/null)
+        if [[ -n "$gh_token" ]]; then
+            curl_args+=(-H "Authorization: token ${gh_token}")
+        fi
+    fi
+
+    if ! curl "${curl_args[@]}" "$REMOTE_URL" 2>/dev/null; then
         echo "  ✗ Couldn't reach GitHub. Check your internet and try again."
         echo ""
         return 1
@@ -1029,7 +1052,7 @@ cmd_update() {
         cp "$tmpfile" "$self"
         chmod +x "$self"
         echo "  ✓ Updated! santiago is now the latest version."
-    elif sudo cp "$tmpfile" "$self" 2>/dev/null && sudo chmod +x "$self" 2>/dev/null; then
+    elif try_sudo cp "$tmpfile" "$self" && try_sudo chmod +x "$self"; then
         echo "  ✓ Updated! (used sudo since ${self} isn't writable by you)"
     else
         echo "  ✗ Couldn't write to ${self}. Try:"
