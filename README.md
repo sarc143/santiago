@@ -29,6 +29,7 @@ done. type `santiago` to see if it worked.
 - `santiago status` — check how your mac is doing right now
 - `santiago burn` — free up memory without closing anything
 - `santiago nuke` — pick which apps to force-quit, one by one
+- `santiago whitelist` — see and pick which apps santiago should never touch
 - `santiago start` — run santiago in the background every 15 minutes
 - `santiago stop` — turn off the background thing
 - `santiago log` — see what santiago has been doing
@@ -47,6 +48,16 @@ frees up inactive memory. doesn't close any of your apps. just clears out stuff 
 ### nuke
 
 the big one. shows you every app running on your mac and lets you pick which ones to kill. use arrow keys to move, enter to kill, q to quit. killed apps show (NUKED) so you know what's gone.
+
+### whitelist
+
+keeps your important apps safe. run `santiago whitelist` and it shows you:
+1. which apps are already protected (screenshot tools and menubar apps are built-in)
+2. every app on your mac that you could add
+
+use arrow keys to pick apps, enter to toggle protection, s to save. that's it.
+
+to remove an app later: `santiago whitelist remove AppName`
 
 ### start / stop
 
