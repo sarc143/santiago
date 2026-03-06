@@ -17,6 +17,7 @@ BATTERY_PURGE_THRESHOLD=50
 INTERVAL=300
 AGGRESSIVE=false
 CPU_HOG_THRESHOLD=80
+WHITELIST=""
 
 # Load config overrides if they exist
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
@@ -187,8 +188,20 @@ cmd_burn() {
     if [[ -n "$hogs" ]]; then
         echo ""
         echo "  CPU hogs (>${CPU_HOG_THRESHOLD}%):"
+        # Build burn-protected list from whitelist
+        local burn_protected="Screenshot|ScreenCaptureKit|screencaptureui|screencapture|CleanShot|Shottr|Lightshot|Skitch|Monosnap|Snagit|Xnapper|ShareShot|Bartender|Ice|iStatMenus|MenubarX|Hidden Bar|Dozer|Vanilla"
+        if [[ -n "$WHITELIST" ]]; then
+            burn_protected="${burn_protected}|${WHITELIST}"
+        fi
+
         echo "$hogs" | while read -r pid user cpu mem cmd; do
             echo "    PID $pid: $cmd (${cpu}% CPU, ${mem}% MEM)"
+
+            # Skip whitelisted apps
+            if echo "$cmd" | grep -qiE "$burn_protected"; then
+                echo "    [skip] $cmd is whitelisted"
+                continue
+            fi
 
             if $aggressive || [[ "$AGGRESSIVE" == "true" ]]; then
                 if $dry_run; then
@@ -340,13 +353,17 @@ cmd_nuke() {
         log "NUKE: DNS cache flushed"
     fi
 
-    # SIGSTOP all CPU hogs
+    # SIGSTOP all CPU hogs (respecting whitelist)
     local cpu_hogs
     cpu_hogs=$(get_cpu_hogs)
     if [[ -n "$cpu_hogs" ]]; then
         echo ""
         echo "  [action] Pausing CPU hogs (>${CPU_HOG_THRESHOLD}%):"
         echo "$cpu_hogs" | while read -r pid user cpu mem cmd; do
+            if echo "$cmd" | grep -qiE "$protected"; then
+                echo "    [skip] $cmd (PID $pid) is protected"
+                continue
+            fi
             if $dry_run; then
                 echo "    [would] SIGSTOP $cmd (PID $pid, ${cpu}% CPU)"
             else
@@ -364,7 +381,15 @@ cmd_nuke() {
     echo ""
 
     # Bare minimum protection — only stuff that would break your session
+    # Also protect screenshot tools and menubar utilities by default
     local protected="Finder|WindowServer|SystemUIServer|Dock|loginwindow|santiago|bash|zsh|ssh|tmux|screen"
+    protected="${protected}|Screenshot|ScreenCaptureKit|screencaptureui|screencapture"
+    protected="${protected}|CleanShot|Shottr|Lightshot|Skitch|Monosnap|Snagit|Xnapper|ShareShot"
+    protected="${protected}|Bartender|Ice|iStatMenus|MenubarX|Hidden Bar|Dozer|Vanilla"
+    # Append user whitelist if set
+    if [[ -n "$WHITELIST" ]]; then
+        protected="${protected}|${WHITELIST}"
+    fi
 
     local user_procs
     user_procs=$(ps -axo pid,user,%mem,command 2>/dev/null | \
@@ -635,6 +660,11 @@ cmd_help() {
     echo "    santiago nuke           # the big one — pick apps to kill"
     echo "    santiago nuke --dry-run # see what it WOULD kill (safe to run)"
     echo "    santiago start          # set it and forget it"
+    echo ""
+    echo "  Whitelist:"
+    echo "    Screenshot tools and menubar utilities are protected by default."
+    echo "    To protect additional apps, edit ~/.santiago/config and set:"
+    echo "      WHITELIST=\"MyApp|AnotherApp\""
     echo ""
     echo "  Nothing santiago does is permanent. It never deletes files."
     echo "  Worst case: an app you closed reopens itself. That's it."

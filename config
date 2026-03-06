@@ -13,3 +13,8 @@ AGGRESSIVE=false
 
 # CPU hog threshold (% CPU usage)
 CPU_HOG_THRESHOLD=80
+
+# Whitelist: apps that santiago should never close or pause
+# Pipe-separated list of app/process names (matched as substrings)
+# Example: WHITELIST="Screenshot|CleanShot|Bartender|iStatMenus"
+WHITELIST=""
